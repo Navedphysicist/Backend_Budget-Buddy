@@ -1,8 +1,10 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from sqlalchemy.orm import Session
+from sqlalchemy import extract
 from app.db.database import get_db
-from app.models.models import Expense
+from app.models.expense import DbExpense
+from app.models.category import DbCategory
+from app.models.payment_mode import DbPaymentMode
 from app.schemas.schemas import Expense as ExpenseSchema, ExpenseCreate, ExpenseUpdate
 from typing import List, Optional
 from datetime import datetime
@@ -13,93 +15,159 @@ import io
 router = APIRouter()
 
 @router.get("/expense", response_model=List[ExpenseSchema])
-async def get_expenses(
+def get_expenses(
     category: Optional[str] = None,
     recurring: Optional[bool] = None,
     month: Optional[str] = None,
     search: Optional[str] = None,
     page: int = Query(1, gt=0),
-    db: AsyncSession = Depends(get_db)
+    db: Session = Depends(get_db)
 ):
-    query = select(Expense)
+    query = db.query(DbExpense)
+    
+    # Apply filters
     if category:
-        query = query.filter(Expense.category.has(name=category))
+        query = query.filter(DbExpense.category.has(name=category))
     if recurring is not None:
-        query = query.filter(Expense.recurring == recurring)
+        query = query.filter(DbExpense.recurring == recurring)
     if month:
         try:
-            query = query.filter(func.strftime('%Y-%m', Expense.date) == month)
+            date = datetime.strptime(month, '%Y-%m')
+            query = query.filter(
+                extract('year', DbExpense.date) == date.year,
+                extract('month', DbExpense.date) == date.month
+            )
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid month format. Use YYYY-MM")
     if search:
-        query = query.filter(Expense.note.ilike(f"%{search}%"))
+        query = query.filter(DbExpense.note.like(f"%{search}%"))
+    
+    # Add sorting
+    query = query.order_by(DbExpense.date.desc())
     
     # Pagination
     limit = 10
     offset = (page - 1) * limit
-    query = query.offset(offset).limit(limit)
-    
-    result = await db.execute(query)
-    expenses = result.scalars().all()
+    expenses = query.offset(offset).limit(limit).all()
     return expenses
 
 @router.post("/expense", response_model=ExpenseSchema, status_code=201)
-async def create_expense(expense: ExpenseCreate, db: AsyncSession = Depends(get_db)):
-    db_expense = Expense(**expense.model_dump())
+def create_expense(expense: ExpenseCreate, db: Session = Depends(get_db)):
+    # First, find or create the category
+    category = db.query(DbCategory).filter(
+        DbCategory.name == expense.category.name,
+        DbCategory.icon == expense.category.icon,
+        DbCategory.color == expense.category.color
+    ).first()
+    
+    if not category:
+        category = DbCategory(**expense.category.model_dump())
+        db.add(category)
+        db.flush()
+    
+    # Then, find or create the payment mode
+    payment_mode = db.query(DbPaymentMode).filter(
+        DbPaymentMode.name == expense.paymentMode.name,
+        DbPaymentMode.icon == expense.paymentMode.icon,
+        DbPaymentMode.color == expense.paymentMode.color
+    ).first()
+    
+    if not payment_mode:
+        payment_mode = DbPaymentMode(**expense.paymentMode.model_dump())
+        db.add(payment_mode)
+        db.flush()
+    
+    # Create the expense with the found/created category and payment mode
+    expense_data = expense.model_dump(exclude={'category', 'paymentMode'})
+    db_expense = DbExpense(
+        **expense_data,
+        category_id=category.id,
+        payment_mode_id=payment_mode.id
+    )
+    
     db.add(db_expense)
-    await db.commit()
-    await db.refresh(db_expense)
+    db.commit()
+    db.refresh(db_expense)
     return db_expense
 
 @router.delete("/expense/{expense_id}")
-async def delete_expense(expense_id: int, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Expense).filter(Expense.id == expense_id))
-    expense = result.scalar_one_or_none()
+def delete_expense(expense_id: int, db: Session = Depends(get_db)):
+    expense = db.query(DbExpense).get(expense_id)
     if not expense:
         raise HTTPException(status_code=404, detail="Expense not found")
-    await db.delete(expense)
-    await db.commit()
+    db.delete(expense)
+    db.commit()
     return {"message": "Expense deleted"}
 
 @router.patch("/expense/{expense_id}", response_model=ExpenseSchema)
-async def update_expense(
+def update_expense(
     expense_id: int,
     expense_update: ExpenseUpdate,
-    db: AsyncSession = Depends(get_db)
+    db: Session = Depends(get_db)
 ):
-    result = await db.execute(select(Expense).filter(Expense.id == expense_id))
-    expense = result.scalar_one_or_none()
+    expense = db.query(DbExpense).get(expense_id)
     if not expense:
         raise HTTPException(status_code=404, detail="Expense not found")
     
-    for field, value in expense_update.model_dump(exclude_unset=True).items():
+    update_data = expense_update.model_dump(exclude_unset=True)
+    
+    # Handle category update if provided
+    if 'category' in update_data:
+        category_data = update_data.pop('category')
+        category = db.query(DbCategory).filter(
+            DbCategory.name == category_data['name'],
+            DbCategory.icon == category_data['icon'],
+            DbCategory.color == category_data.get('color')
+        ).first()
+        
+        if not category:
+            category = DbCategory(**category_data)
+            db.add(category)
+            db.flush()
+        
+        expense.category_id = category.id
+    
+    # Handle payment mode update if provided
+    if 'paymentMode' in update_data:
+        payment_data = update_data.pop('paymentMode')
+        payment_mode = db.query(DbPaymentMode).filter(
+            DbPaymentMode.name == payment_data['name'],
+            DbPaymentMode.icon == payment_data['icon'],
+            DbPaymentMode.color == payment_data.get('color')
+        ).first()
+        
+        if not payment_mode:
+            payment_mode = DbPaymentMode(**payment_data)
+            db.add(payment_mode)
+            db.flush()
+        
+        expense.payment_mode_id = payment_mode.id
+    
+    # Update other fields
+    for field, value in update_data.items():
         setattr(expense, field, value)
     
-    await db.commit()
-    await db.refresh(expense)
+    db.commit()
+    db.refresh(expense)
     return expense
 
 @router.get("/getCSV")
-async def get_expenses_csv(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Expense))
-    expenses = result.scalars().all()
+def get_expenses_csv(db: Session = Depends(get_db)):
+    expenses = db.query(DbExpense).order_by(DbExpense.date.desc()).all()
     
     # Convert to DataFrame
-    expense_data = []
-    for expense in expenses:
-        expense_data.append({
-            'id': expense.id,
-            'amount': expense.amount,
-            'date': expense.date,
-            'note': expense.note,
-            'recurring': expense.recurring,
-            'category': expense.category.name if expense.category else None,
-            'payment_mode': expense.payment_mode.name if expense.payment_mode else None
-        })
-    
-    df = pd.DataFrame(expense_data)
+    expense_data = [{
+        'id': expense.id,
+        'amount': expense.amount,
+        'date': expense.date,
+        'note': expense.note,
+        'recurring': expense.recurring,
+        'category': expense.category.name if expense.category else None,
+        'payment_mode': expense.payment_mode.name if expense.payment_mode else None
+    } for expense in expenses]
     
     # Create CSV
+    df = pd.DataFrame(expense_data)
     stream = io.StringIO()
     df.to_csv(stream, index=False)
     
@@ -108,5 +176,4 @@ async def get_expenses_csv(db: AsyncSession = Depends(get_db)):
         media_type="text/csv",
         headers={"Content-Disposition": f"attachment; filename=expenses_{datetime.now().strftime('%Y%m%d')}.csv"}
     )
-    
     return response

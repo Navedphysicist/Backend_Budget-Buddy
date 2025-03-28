@@ -1,6 +1,6 @@
 from pydantic import BaseModel
 from datetime import date
-from typing import Optional, List
+from typing import Optional
 
 # Testimonial schemas
 class TestimonialBase(BaseModel):
@@ -51,24 +51,33 @@ class PaymentMode(PaymentModeBase):
         from_attributes = True
 
 # Expense schemas
+class CategoryData(BaseModel):
+    name: str
+    icon: str
+    color: Optional[str] = None
+
+class PaymentModeData(BaseModel):
+    name: str
+    icon: str
+    color: Optional[str] = None
+
 class ExpenseBase(BaseModel):
     amount: float
     date: date
     note: Optional[str] = None
     recurring: bool = False
-    category_id: int
-    payment_mode_id: int
 
 class ExpenseCreate(ExpenseBase):
-    pass
+    category: CategoryData
+    paymentMode: PaymentModeData
 
 class ExpenseUpdate(BaseModel):
     amount: Optional[float] = None
     note: Optional[str] = None
     date: Optional[date] = None
     recurring: Optional[bool] = None
-    category_id: Optional[int] = None
-    payment_mode_id: Optional[int] = None
+    category: Optional[CategoryData] = None
+    paymentMode: Optional[PaymentModeData] = None
 
 class Expense(ExpenseBase):
     id: int

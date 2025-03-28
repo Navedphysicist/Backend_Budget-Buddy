@@ -1,8 +1,8 @@
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 from app.models.models import Testimonial, Category, PaymentMode
 
 
-async def seed_data(db: AsyncSession):
+def seed_data(db: Session):
     # Seed testimonials
     testimonials = [
         Testimonial(
@@ -57,4 +57,4 @@ async def seed_data(db: AsyncSession):
         db.add(payment_mode)
     
     # Commit the session
-    await db.commit()
+    db.commit()

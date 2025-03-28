@@ -1,27 +1,27 @@
 from fastapi import APIRouter, Depends
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from sqlalchemy.orm import Session
+from sqlalchemy import func
 from app.db.database import get_db
-from app.models.models import Category, Expense
-from app.schemas.schemas import Category as CategorySchema, CategoryWithExpense
+from app.models.category import DbCategory
+from app.models.expense import DbExpense
+from app.schemas.category import Category as CategorySchema, CategoryWithExpense
 from typing import List
 
 router = APIRouter()
 
 @router.get("/categories", response_model=List[CategorySchema])
-async def get_categories(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Category))
-    categories = result.scalars().all()
+def get_categories(db: Session = Depends(get_db)):
+    categories = db.query(DbCategory).all()
     return categories
 
 @router.get("/category_expense", response_model=List[CategoryWithExpense])
-async def get_category_expenses(db: AsyncSession = Depends(get_db)):
-    query = select(
-        Category,
-        func.coalesce(func.sum(Expense.amount), 0).label('expense')
-    ).outerjoin(Expense).group_by(Category.id)
+def get_category_expenses(db: Session = Depends(get_db)):
+    query = db.query(
+        DbCategory,
+        func.coalesce(func.sum(DbExpense.amount), 0).label('expense')
+    ).outerjoin(DbExpense).group_by(DbCategory.id)
     
-    result = await db.execute(query)
+    result = query.all()
     categories = []
     for row in result:
         category_dict = row[0].__dict__
@@ -30,7 +30,6 @@ async def get_category_expenses(db: AsyncSession = Depends(get_db)):
     return categories
 
 @router.get("/category_budget", response_model=List[CategorySchema])
-async def get_category_budgets(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Category))
-    categories = result.scalars().all()
+def get_category_budgets(db: Session = Depends(get_db)):
+    categories = db.query(DbCategory).all()
     return categories

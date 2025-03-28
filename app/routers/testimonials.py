@@ -1,15 +1,13 @@
 from fastapi import APIRouter, Depends
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy.orm import Session
 from app.db.database import get_db
-from app.models.models import Testimonial
+from app.models.testimonial import DbTestimonial
 from app.schemas.schemas import Testimonial as TestimonialSchema
 from typing import List
 
 router = APIRouter()
 
 @router.get("/testimonials", response_model=List[TestimonialSchema])
-async def get_testimonials(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Testimonial))
-    testimonials = result.scalars().all()
+def get_testimonials(db: Session = Depends(get_db)):
+    testimonials = db.query(DbTestimonial).all()
     return testimonials
